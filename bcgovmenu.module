@@ -1,0 +1,294 @@
+<?php
+/**
+ * @file(bcgovmenu.module)
+ */
+
+/**
+ * Implements hook_permission()
+ */
+function bcgovmenu_permission() {
+  return array (
+    'administer_bcgovmenu' => array (
+      'title' => t('Administer the BC Gov Menu module'),
+      'description' => t('Perform administative tasks on the BC Gov Menu module configuration.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu()
+ */
+function bcgovmenu_menu() {
+  return array (
+    'admin/config/bcgovmenu' => array (
+      'title' => t('BC Gov Menu'),
+      'description' => t('Administer BC Gov Menu'),
+      'access arguments' => array (
+        'administer_bcgovmenu',
+      ),
+    ),
+    // admin config settings
+    'admin/config/bcgovmenu/manage' => array (
+      'title' => t('BC Gov Menu Settings'),
+      'description' => 'Manage BC Gov Menu configuration and settings',
+      'access arguments' => array (
+        'administer_bcgovmenu',
+      ),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array (
+        'bcgovmenu_admin_settings_form',
+      ),
+    ),
+  );
+} // hook_menu()
+
+/**
+ * Implements hook_form()
+ */
+function bcgovmenu_admin_settings_form($node, &$form_state) {
+
+  $form = array();
+  $form['overview'] = array(
+    '#markup' => '<p>' . t('This interface allows admins to manage general configuartions regarding the BC Gov Menu module.') . '</p>',
+    '#prefix' => '<div>',
+    '#suffix' => '</div><br>',
+  );
+  $form['manually_refresh_xml'] = array(
+    '#type' => 'submit',
+    '#value' => t('Manually Refresh XML Data'),
+    '#suffix' => '<br><div class="description">'.t('Normally, this action is run whenever a cron job is run, but you can get new data right now from the source.').'</div></div>',
+    '#prefix' => '<div>',
+    '#submit' => array('_bcgovmenu_getXML'),
+  );
+  $form['bcgovmenu_sourcexmlurl'] = array(
+    '#prefix' => '<br>',
+    '#title' => t('The URL to get the BC Gov XML from:'),
+    '#description' => t('<em>This URL is <strong>not</strong> intended to change</em>, but it is allowed to be configured here.<br>The default value is: '.variable_get('bcgovmenu_sourcexmlurl', 'http://www2.gov.bc.ca/gov/nav.page').'<br><br>Note that a change of default URL may indicate a change in structure of the previous XML used for parsing/creating the BC Gov Menu in Drupal. It is recommended that you check that the new data structure matches the old one, before changing this value. Failure to do so may cause problems.'),
+    '#type' => 'textfield',
+    '#default_value' => variable_get('bcgovmenu_sourcexmlurl', 'http://www2.gov.bc.ca/gov/nav.page'),
+    '#collapsible' => false,
+    '#collapsed' => false,
+  );
+
+  return system_settings_form($form);
+
+} // bcgovmenu_admin_settings_form()
+
+/**
+ * Validates some of the form values.
+ */
+function bcgovmenu_admin_settings_form_validate($form, &$form_state) {
+  if (!_bcgovmenu_validate_url($form_state['values']['bcgovmenu_sourcexmlurl'])) {
+    form_set_error('bcgovmenu_sourcexmlurl', t('You must enter a valid URL.'));
+  }
+}
+
+/**
+ * Helper funciton for validating a URL.
+ * @param string $value The string to be tested.
+ * @return boolean TRUE is correctly formatted URL
+ *
+ */
+function _bcgovmenu_validate_url($value) {
+  // http://stackoverflow.com/a/8234912/1171790
+  return preg_match('/((([A-Za-z]{3,9}:(?:\/\/)?)(?:[-;:&=\+\$,\w]+@)?[A-Za-z0-9.-]+|(?:www.|[-;:&=\+\$,\w]+@)[A-Za-z0-9.-]+)((?:\/[\+~%\/.\w-_]*)?\??(?:[-\+=&;%@.\w_]*)#?(?:[\w]*))?)/', $value) ? true : false;
+}
+
+/**
+ * Remove all links in bc-gov-menu, but keep the menu (empty).
+ */
+ function _bcgovmenu_delete_all_links($menu) {
+
+   // The order by clause selects child items first, trying to prevent cascading
+   // deletes during the batch process.
+   $query = "
+     SELECT mlid
+     FROM {menu_links}
+     WHERE menu_name = :menu_name
+     ORDER BY
+       p9 DESC,
+       p8 DESC,
+       p7 DESC,
+       p6 DESC,
+       p5 DESC,
+       p4 DESC,
+       p3 DESC,
+       p2 DESC,
+       p1 DESC
+   ";
+
+   $result = db_query($query, array(':menu_name' => $menu));
+
+   $mlids = array();
+   foreach ($result as $record) {
+     $mlids[] = $record->mlid;
+   }
+
+   if (!count($mlids)) {
+     drupal_set_message(t('There are no links to delete in the '.$menu.' menu.'));
+     return FALSE;
+   }
+
+   $chunks = array_chunk($mlids, 10);
+
+   $operations = array();
+   foreach ($chunks as $chunk) {
+     $operations[] = array('_bcgovmenu_delete_all_links_processor', array($chunk));
+   }
+
+   $batch = array(
+     'operations' => $operations,
+     'finished' => 'bcgovmenu_delete_all_links_finished',
+     'title' => 'Deleting all menu links in chunks of 10',
+   );
+
+   batch_set($batch);
+   drupal_set_message('Removed all links from BC Gov Menu.');
+
+ }
+  /**
+  * A batch processor function.
+  */
+ function _bcgovmenu_delete_all_links_processor($chunk, &$context) {
+   foreach ($chunk as $mlid) {
+     menu_link_delete($mlid);
+   }
+ }
+
+/**
+ * Gets a fresh copy of the XML menu data.
+ * Removes all of the links in the bc-gov-menu menu.
+ * Parses the new (fresh) XML data into the (now empty) bc-gov-menu menu.
+ */
+function _bcgovmenu_getXML() {
+
+  $get_feed = file_put_contents(drupal_get_path('module','bcgovmenu').'/data/govmenu.xml', fopen(variable_get('bcgovmenu_sourcexmlurl', 1), 'r'));
+  if ($get_feed === false) {
+    drupal_set_message('Cannot refresh the BC Gov Menu with new data. :( Reason: Failed to fetch new XML data!','error');
+    return FALSE;
+  } else {
+    drupal_set_message('Successfully fetched the fresh BC Gov Menu XML data.');
+  }
+
+  // refresh bc-gov-menu by removing all of the links first
+  _bcgovmenu_delete_all_links('bc-gov-menu');
+
+  // now fill the empty menu with the new links by parsing the XML file
+  drupal_set_message('Let\'s add new links to bc-gov-menu from fresh XML data now...');
+
+  $xml = simplexml_load_file(drupal_get_path('module','bcgovmenu').'/data/govmenu.xml');
+  $entries = $xml->Properties->Data->Result->map->entry;
+
+  // make an array of just the items we want
+  $menuitems_sanitized = array();
+  foreach($entries as $entry) {
+    if (isset($entry->navLevel->level)) {
+      if ($entry->navLevel->level < 4) {
+        $theRealData = $entry->navLevel;
+        if (isset($theRealData->navTitle)) {
+          $menuitems_sanitized[] = array(
+            'id' => (string) $theRealData->id,
+            'parentId' => (string) $theRealData->parentId,
+            'level' => (string) $theRealData->level,
+            'link' => 'http://www2.gov.bc.ca/gov/'.$theRealData->renderBy.'?id='.$theRealData->id,
+            'title' => (string) $theRealData->navTitle,
+            'orderWeight' => (string) $theRealData->orderWeight
+          );
+        }
+      }
+    }
+  } // foreach $entries
+
+  // start to build the nested array of actual menu data (that we will use for output)
+  $output = array();
+  foreach ($menuitems_sanitized as $m_item) {
+    if ($m_item['level'] == 1) {
+      $output[$m_item['id']] = $m_item;
+    }
+  }
+
+  // add second level menu items to the $output
+  foreach ($menuitems_sanitized as $m_item) {
+    if ($m_item['level'] == 2) {
+      $testId = $m_item['parentId'];
+      $currentId = $m_item['id'];
+      foreach($output as $toplevelMenuItem) {
+        if ($toplevelMenuItem['id'] == $testId) {
+          $output[$testId]['children'][$currentId] = $m_item;
+        }
+      }
+    }
+  }
+
+  // add tertiary level menu items to the $output
+  foreach ($output as $m_item) {
+    $mainId = $m_item['id'];
+    foreach ($m_item['children'] as $child2) {
+      foreach ($menuitems_sanitized as $item) {
+        if ($item['parentId'] == $child2['id']) {
+          $output[$mainId]['children'][$child2['id']]['children'][$item['id']] = $item;
+        }
+      }
+    }
+  }
+
+  // build the menus! :)
+  $tertiary_items = array();
+  foreach ($output as $menu_item) {
+    $selectedMenuItem = $menu_item['id'];
+    // set the top level menu links and titles
+    $topLevelMenuLink = array('link_path' => $menu_item['link'], 'link_title' => $menu_item['title'], 'menu_name' => 'bc-gov-menu', 'weight' => $menu_item['orderWeight'], 'expanded' => TRUE);
+    // store the mlid. we will use this for a relationship with this link's children
+    $mlid = menu_link_save($topLevelMenuLink); // https://api.drupal.org/api/drupal/includes%21menu.inc/function/menu_link_save/7
+    foreach ($menu_item['children'] as $child) {
+      $selectedChildItem = $child['id'];
+      $secondLevelMenuLink = array('link_path' => $child['link'], 'link_title' => $child['title'], 'menu_name' => 'bc-gov-menu', 'plid' => $mlid, 'weight' => $child['orderWeight'], 'expanded' => TRUE);
+      $child_mlid = menu_link_save($secondLevelMenuLink);
+      if (isset($child['children'])) {
+        foreach($child['children'] as $grandchild) {
+          $tertiary_items[] = array(
+            'plid' => $child_mlid,
+            'id' => $grandchild['id'],
+            'parentId' => $grandchild['parentId'],
+            'level' => $grandchild['level'],
+            'link' => $grandchild['link'],
+            'title' => $grandchild['title'],
+            'orderWeight' => $grandchild['orderWeight']
+          );
+        } // foreach $child['children'] as $grandchild
+      } // if we have grandchildren
+    } // foreach $menu_item['children'] as $child
+  } // foreach $output as $menu_item
+
+  // add the tertiary (third level) menu items to the appropriate menu children
+  foreach ($tertiary_items as $grandchild) {
+    $thirdLevelMenuLink = array(
+      'link_path' => $grandchild['link'],
+      'link_title' => $grandchild['title'],
+      'menu_name' => 'bc-gov-menu',
+      'plid' => $grandchild['plid'],
+      'weight' => $grandchild['orderWeight'],
+      'expanded' => TRUE
+    );
+    menu_link_save($thirdLevelMenuLink);
+  }
+
+  drupal_set_message('DONE! Refreshed BC Gov Menu data from source XML.');
+
+  // dpm($tertiary_items);
+
+  // clear the menu cache when we are all said and done
+  // https://api.drupal.org/api/drupal/includes%21menu.inc/function/menu_cache_clear_all/7
+  menu_cache_clear_all();
+
+} // _bcgovmenu_getXML()
+
+/**
+ * Refresh the XML data when we run cron.
+ */
+function bcgovmenu_cron() {
+  $msg = 'The BC Gov Menu module ran cron at: '.time();
+  _bcgovmenu_getXML();
+  file_put_contents(drupal_get_path('module','bcgovmenu').'/data/cron_last_run', $msg);
+  watchdog('bcgovmenu', $msg, NULL, WATCHDOG_INFO);
+}

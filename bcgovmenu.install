@@ -1,0 +1,117 @@
+<?php
+/**
+ * @file (BC Gov Menu Installation)
+ */
+
+/**
+ * Implements hook_install()
+ */
+function bcgovmenu_install() {
+
+  // init vars (defaults)
+  variable_set('bcgovmenu_sourcexmlurl', 'http://www2.gov.bc.ca/gov/nav.page');
+  // variable_set('bcgovmenu_default_gmap_zoom', 7);
+
+  // t() may be unavailable at install
+  $t = get_t();
+
+  // give user feedback at install
+  drupal_set_message($t('BC Gov Menu default variables created and stored in database.'));
+
+  // create custom fields and then attach them as an instance to the content type
+  $fields = array();
+
+  // $fields['bcgovmenu_unit_count'] = array(
+  //   'field_name' => 'bcgovmenu_unit_count',
+  //   'type' => 'number_integer',
+  //   'cardinality' => 1, // optional
+  //   'settings' => array(
+  //     'max_length' => 5,
+  //   ),
+  // );
+
+  $fields['bcgovmenu_sourcexmlurl'] = array(
+    'field_name' => 'bcgovmenu_sourcexmlurl',
+    'type' => 'text'
+  );
+
+  // set the fields from the arrays above by looping through them and calling field_create_field
+  foreach ($fields as $field) {
+    field_create_field($field);
+  }
+
+  // create field instances
+  $instances = array();
+
+  $instances['bcgovmenu_sourcexmlurl'] = array(
+    'field_name' => 'bcgovmenu_sourcexmlurl',
+    'label' => $t('XML Data Location'),
+    'description' => $t('URL to the source XML for the BC Gov Menu Module'),
+    'widget' => array(
+      'type' => 'text_textfield',
+    ),
+    'optional' => true,
+    'settings' => array(
+      'text_processing' => 0,
+    ),
+  );
+
+  // create a menu that will hold the data from www2.gov.bc.ca
+  $bc_gov_menu = array(
+    'menu_name' => 'bc-gov-menu',
+    'title' => 'BC Gov Menu',
+    'description' => 'Creates the BC Gov Menu that holds all of the first, second and third level menu items from www2.gov.bc.ca<br>Do not edit the links in this menu as the BC Gov Menu module will change them dynamically. Your edits to this menu will be overwritten the next time cron runs.',
+  );
+
+  menu_save($bc_gov_menu);
+  cache_clear_all('*', 'cache_menu', TRUE);
+  drupal_set_message('BC Gov Menu added to the Drupal menu system.');
+
+  _bcgovmenu_getXML();
+
+} // bcgovmenu_install()
+
+
+/**
+ * Implements hook_uninstall()
+ */
+function bcgovmenu_uninstall() {
+
+  // t() may be unavailable during uninstall
+  $t = get_t();
+
+  variable_del('bcgovmenu_sourcexmlurl');
+  // variable_del('bcgovmenu_default_gmap_zoom');
+
+  field_delete_field('bcgovmenu_sourcexmlurl');
+
+  
+  $remove_tables = array (
+    'field_data_bcgovmenu_sourcexmlurl',
+    'field_revision_bcgovmenu_sourcexmlurl',
+  );
+
+  foreach ($remove_tables as $table) {
+    if (db_table_exists($table)) {
+      db_drop_table($table);
+    }
+  }
+
+  // give user feedback at uninstall
+  drupal_set_message($t('BC Gov Menu variables and fields removed from the database.'));
+
+  // remove the entire menu as we are uninstalling the module
+  $bc_gov_menu = array(
+    'menu_name' => 'bc-gov-menu',
+    'title' => 'BC Gov Menu',
+    'description' => 'Holds all of the first, second and third level menu items from www2.gov.bc.ca',
+  );
+
+  menu_delete($bc_gov_menu);
+  cache_clear_all('*', 'cache_menu', TRUE);
+  drupal_set_message($t('BC Gov Menu removed from Drupal menu system. Be sure to flush the menu cache now.'));
+
+  // do what is normally done in cron to purge old fields
+  field_purge_batch(1000);
+
+} // bcgovmenu_uninstall()

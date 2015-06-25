@@ -1,0 +1,8 @@
+name = BC Gov Menu
+description = Imports the first, second, and third level menu items from www2.gov.bc.ca to the Drupal menu system.
+core = 7.x
+version = 7.x-0.1-dev
+configure = admin/config/bcgovmenu/manage
+package = BC Gov
+dependencies[] = menu_block
+dependencies[] = menu
